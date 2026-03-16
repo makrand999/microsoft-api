@@ -1,0 +1,129 @@
+
+Host: learn.microsoft.com
+
+GET /api/hierarchy/modules?unitId=learn.wwl.create-throw-exceptions-c-sharp.introduction&locale=en-gb HTTP/2
+
+
+GET /api/hierarchy/paths/learn.wwl.get-started-c-sharp-part-6?locale=en-gb HTTP/2
+returns
+{
+  "modules": [
+    {
+      "parents": [
+        {
+          "uid": "learn.wwl.get-started-c-sharp-part-6",
+          "type": "learningPath",
+          "title": "Debug C# console applications (Get started with C#, Part 6)",
+          "url": "/training/paths/get-started-c-sharp-part-6/",
+          "iconUrl": "/training/achievements/debug-c-sharp-console-applications.svg",
+          "durationInMinutes": 327,
+          "points": 1050
+        }
+      ],
+      "units": [
+        {
+          "uid": "learn.wwl.review-principles-code-debugging-exception-handling-c-sharp.introduction",
+          "type": "unit",
+          "title": "Introduction",
+          "url": "/training/modules/review-principles-code-debugging-exception-handling-c-sharp/1-introduction/",
+          "durationInMinutes": 3,
+          "points": 100,
+          "ROBOTS": "noindex"
+        },
+        {
+          "uid": "learn.wwl.review-principles-code-debugging-exception-handling-c-sharp.get-started-test-debug-exception",
+          "type": "unit",
+          "title": "Get started with testing, debugging, and exception handling",
+          "url": "/training/modules/review-principles-code-debugging-exception-handling-c-sharp/2-get-started-test-debug-exception/",
+          "durationInMinutes": 7,
+          "points": 200,
+          "ROBOTS": "noindex"
+        },
+        {
+          "uid": "learn.wwl.review-principles-code-debugging-exception-handling-c-sharp.examine-code-debug",
+          "type": "unit",
+          "title": "Examine the code debugger approach to debugging code",
+          "url": "/training/modules/review-principles-code-debugging-exception-handling-c-sharp/3-examine-code-debug/",
+          "durationInMinutes": 5,
+          "points": 200,
+          "ROBOTS": "noindex"
+        },
+        {
+          "uid": "learn.wwl.review-principles-code-debugging-exception-handling-c-sharp.examine-code-exception",
+          "type": "unit",
+          "title": "Examine exceptions and how exceptions are used",
+          "url": "/training/modules/review-principles-code-debugging-exception-handling-c-sharp/4-examine-code-exception/",
+          "durationInMinutes": 6,
+          "points": 200,
+          "ROBOTS": "noindex"
+        },
+        {
+          "uid": "learn.wwl.review-principles-code-debugging-exception-handling-c-sharp.knowledge-check",
+          "type": "unit",
+          "title": "Module assessment",
+          "url": "/training/modules/review-principles-code-debugging-exception-handling-c-sharp/5-knowledge-check/",
+          "durationInMinutes": 4,
+          "points": 200,
+          "ROBOTS": "noindex",
+          "module_assessment": true
+        },
+        {
+          "uid": "learn.wwl.review-principles-code-debugging-exception-handling-c-sharp.summary",
+          "type": "unit",
+          "title": "Summary",
+          "url": "/training/modules/review-principles-code-debugging-exception-handling-c-sharp/6-summary/",
+          "durationInMinutes": 1,
+          "points": 100,
+          "ROBOTS": "noindex"
+        }
+      ],
+      "achievement": {
+        "uid": "learn.wwl.review-principles-code-debugging-exception-handling-c-sharp.badge",
+        "title": "Review the principles of code debugging and exception handling",
+        "iconUrl": "/training/achievements/review-principles-code-debugging-exception-handling-c-sharp.svg",
+        "type": "badge",
+        "sourceType": "progress",
+        "sourceUId": "learn.wwl.review-principles-code-debugging-exception-handling-c-sharp",
+        "sourceUrl": "/training/modules/review-principles-code-debugging-exception-handling-c-sharp/",
+        "sourceTitle": "Review the principles of code debugging and exception handling"
+      },
+      "summary": "This module examines code validation using a combination of testing, debugging, and exception handling. The debugging process and benefits provided by code debugger are reviewed, along with the principals and processes behind exception handling.",
+      "abstract": "\u003Cul\u003E\n\u003Cli\u003E\u003Cp\u003EReview the responsibilities for software testing, debugging, and exception handling.\u003C/p\u003E\n\u003C/li\u003E\n\u003Cli\u003E\u003Cp\u003EExamine the code debugging process and the benefits provided by code debugger tools.\u003C/p\u003E\n\u003C/li\u003E\n\u003Cli\u003E\u003Cp\u003EExamine what an exception is and the options for managing exceptions in your code.\u003C/p\u003E\n\u003C/li\u003E\n\u003C/ul\u003E\n",
+      "levels": [
+        "beginner"
+      ],
+      "roles": [
+        "developer",
+        "higher-ed-educator",
+        "k-12-educator",
+        "student"
+      ],
+      "products": [
+        "dotnet",
+        "vs-code"
+      ],
+      "subjects": [
+        "app-development"
+      ],
+      "uid": "learn.wwl.review-principles-code-debugging-exception-handling-c-sharp",
+      "type": "module",
+      "title": "Review the principles of code debugging and exception handling",
+      "url": "/training/modules/review-principles-code-debugging-exception-handling-c-sharp/",
+      "iconUrl": "/training/achievements/review-principles-code-debugging-exception-handling-c-sharp.svg",
+      "durationInMinutes": 26,
+      "points": 200,
+      "ratingEnabled": true
+    },
+
+PUT /api/progress/units/learn.wwl.create-throw-exceptions-c-sharp.examine-create-exception-c-sharp/?locale=en-us HTTP/2
+here we need to upload answer , to check if perticular unit has question check class="quiz-question" if there  are n this classes then there are n questions
+to answer ex for 2 questions = [{"id":"0","answers":["1"]},{"id":"1","answers":["0"]}]
+here the it can be discribled by uid form aboive json
+PUT /api/progress/units/{uid}/?locale=en-us HTTP/2 //uid of the unit
+same for module_assessment 
+
+GET /api/hierarchy/modules/learn.wwl.create-throw-exceptions-c-sharp?locale=en-gb HTTP/2
+
+
+
+there are total 6 parts of learn.wwl.get-started-c-sharp-part-6 , starts from 1 , learn.wwl.get-started-c-sharp-part-1
