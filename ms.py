@@ -324,12 +324,19 @@ def pick(options: list, prompt: str) -> int:
 
 
 def select_path_and_modules(session: requests.Session):
-    """Returns (path_uid, modules) after user picks a path."""
+    """Returns (path_uid, modules) after user picks a path (built-in or custom)."""
     print("\n── Select Learning Path ──")
-    idx      = pick(LEARNING_PATHS, "Choose path")
-    path_uid = LEARNING_PATHS[idx]
-    print(f"\n  Fetching modules for {path_uid} ...")
-    modules  = get_path_modules(session, path_uid)
+    all_paths  = LEARNING_PATHS + ["[ + Custom / paste URL ]"]
+    idx        = pick(all_paths, "Choose path")
+    if idx == len(LEARNING_PATHS):
+        path_uid = select_path_uid_custom(session)
+        if not path_uid:
+            raise ValueError("No path selected")
+        modules = get_path_modules(session, path_uid)
+    else:
+        path_uid = LEARNING_PATHS[idx]
+        print(f"\n  Fetching modules for {path_uid} ...")
+        modules  = get_path_modules(session, path_uid)
     return path_uid, modules
 
 
@@ -343,6 +350,129 @@ def select_module_and_units(session: requests.Session):
     if not units:
         units = get_module_units(session, module.get("uid", ""))
     return module, units
+
+
+# ─── Custom path helpers ───────────────────────────────────────────────────────
+
+def fetch_uid_from_url(session: requests.Session, url: str) -> str | None:
+    """
+    Fetch any MS Learn page (path or module) and extract uid from:
+      <meta name="uid" content="learn-bizapps.get-started-data-analytics" />
+
+    Works for any prefix — no guessing needed. Use for both paths and modules.
+    """
+    import re
+    url = url.strip()
+    # Ensure it's an absolute URL
+    if not url.startswith("http"):
+        url = "https://" + url.lstrip("/")
+
+    print(f"  [debug] Fetching page: {url}")
+    page_headers = {
+        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "sec-fetch-dest": "document",
+        "sec-fetch-mode": "navigate",
+        "sec-fetch-site": "same-origin",
+    }
+    try:
+        resp = session.get(url, headers=page_headers, timeout=15)
+    except Exception as e:
+        print(f"  [debug] Page fetch failed: {e}")
+        return None
+
+    print(f"  [debug] Page status: {resp.status_code}  |  HTML size: {len(resp.text)} bytes")
+    if resp.status_code != 200:
+        print(f"  [ERROR] Got {resp.status_code} fetching page")
+        return None
+
+    match = re.search(r'<meta[^>]+name=["\']uid["\'][^>]+content=["\']([^"\' ]+)["\']', resp.text)
+    if not match:
+        # also try reversed attribute order: content= before name=
+        match = re.search(r'<meta[^>]+content=["\']([^"\' ]+)["\'][^>]+name=["\']uid["\']', resp.text)
+
+    if not match:
+        print(f"  [ERROR] Could not find <meta name=\"uid\"> — is this a valid MS Learn URL?")
+        return None
+
+    uid = match.group(1)
+    print(f"  [debug] Found uid: {uid}")
+    return uid
+
+
+def load_custom_paths() -> list[str]:
+    """Load saved custom paths from custom_paths.json next to settings.json."""
+    p = SETTINGS_FILE.parent / "custom_paths.json"
+    if p.exists():
+        try:
+            with open(p, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return []
+
+
+def save_custom_paths(paths: list[str]) -> None:
+    p = SETTINGS_FILE.parent / "custom_paths.json"
+    with open(p, "w", encoding="utf-8") as f:
+        json.dump(paths, f, indent=2)
+
+
+def select_path_uid_custom(session: requests.Session) -> str | None:
+    """
+    Ask user to pick from saved custom paths or paste a new learning path URL.
+    Fetches the page to extract the real uid from <meta name="uid">.
+    Returns the path UID string, or None if cancelled.
+    """
+    custom = load_custom_paths()
+
+    print("\n── Custom Learning Path ──")
+    if custom:
+        print("  Saved paths:")
+        for i, entry in enumerate(custom):
+            print(f"    [{i}] {entry['title']}  ({entry['uid']})")
+        print(f"    [n] Add a new path via URL")
+        print(f"    [x] Cancel")
+        choice = input("\nChoice: ").strip().lower()
+        if choice == "x":
+            return None
+        if choice != "n" and choice.isdigit() and 0 <= int(choice) < len(custom):
+            return custom[int(choice)]["uid"]
+        elif choice != "n":
+            print("  Invalid choice.")
+            return None
+
+    # Prompt explicitly for the full learning path URL
+    print("\n  Paste the full learning path URL.")
+    print("  Example: https://learn.microsoft.com/en-gb/training/paths/data-analytics-microsoft/")
+    raw = input("  URL: ").strip()
+    if not raw:
+        return None
+
+    uid = fetch_uid_from_url(session, raw)
+    if not uid:
+        return None
+
+    # Verify it works against the hierarchy API
+    print(f"  Verifying path UID against API ...")
+    try:
+        modules = get_path_modules(session, uid)
+    except Exception as e:
+        print(f"  [ERROR] API call failed: {e}")
+        return None
+
+    titles = ", ".join(m.get("title", "?") for m in modules[:3])
+    suffix = "..." if len(modules) > 3 else ""
+    print(f"  ✓ Found {len(modules)} module(s): {titles}{suffix}")
+
+    save_choice = input("\n  Save this path for future use? [y/n]: ").strip().lower()
+    if save_choice == "y":
+        # Grab a friendly title from the first module's parent if available
+        title = modules[0].get("parents", [{}])[0].get("title", uid) if modules else uid
+        custom.append({"uid": uid, "title": title})
+        save_custom_paths(custom)
+        print(f"  Saved.")
+
+    return uid
 
 
 # ─── Menu actions ──────────────────────────────────────────────────────────────
@@ -369,14 +499,42 @@ def menu_single_unit(session: requests.Session) -> None:
     print("\n✓ Unit processed.")
 
 
+
+def menu_custom_module(session: requests.Session) -> None:
+    """Complete a single module by pasting its URL — no learning path needed."""
+    print("\n── Complete Module by URL ──")
+    print("  Paste the module URL.")
+    print("  Example: https://learn.microsoft.com/en-gb/training/modules/create-throw-exceptions-c-sharp/")
+    raw = input("  URL: ").strip()
+    if not raw:
+        return
+
+    uid = fetch_uid_from_url(session, raw)
+    if not uid:
+        return
+
+    print(f"  Fetching units for module UID: {uid}")
+    try:
+        units = get_module_units(session, uid)
+    except Exception as e:
+        print(f"  [ERROR] Could not fetch module units: {e}")
+        return
+
+    # Build a minimal module dict that complete_module() expects
+    module = {"uid": uid, "title": uid, "units": units}
+    complete_module(session, module)
+
+
 def show_main_menu() -> str:
     print("\n" + "═"*50)
-    print("  Microsoft Learn — C# Auto-Completer")
+    print("  Microsoft Learn — Auto-Completer")
     print("═"*50)
-    print("  [1] Complete ALL paths (parts 1–6)")
+    print("  [1] Complete ALL C# paths (parts 1–6)")
     print("  [2] Complete a specific PATH")
     print("  [3] Complete a specific MODULE")
     print("  [4] Complete a specific UNIT")
+    print("  [5] Complete a CUSTOM path (paste URL)")
+    print("  [6] Complete a CUSTOM module (paste URL)")
     print("  [0] Exit")
     return input("\nChoice: ").strip()
 
@@ -424,7 +582,6 @@ def main():
             if choice == "1":
                 for path_uid in LEARNING_PATHS:
                     complete_path(session, path_uid)
-                    time.sleep(1)
                 print("\n🎉  All 6 parts completed.")
             elif choice == "2":
                 menu_specific_path(session)
@@ -432,6 +589,12 @@ def main():
                 menu_specific_module(session)
             elif choice == "4":
                 menu_single_unit(session)
+            elif choice == "5":
+                uid = select_path_uid_custom(session)
+                if uid:
+                    complete_path(session, uid)
+            elif choice == "6":
+                menu_custom_module(session)
             elif choice == "0":
                 break
             else:
