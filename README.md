@@ -20,7 +20,7 @@ It detects quiz units, submits answers, retrieves the correct answers returned b
 * Required package:
 
 ```bash
-pip install requests
+pip install requests aiohttp
 ```
 
 ---
