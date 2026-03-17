@@ -9,19 +9,23 @@ Usage:
     2. Run: python ms_learn_autocomplete.py
 
 settings.json format: The cookie JSON array exported from your browser.
+
+Requirements:
+    pip install aiohttp
 """
 
+import asyncio
 import json
-import time
-import requests
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import re
 from pathlib import Path
+
+import aiohttp
 
 # ─── Config ────────────────────────────────────────────────────────────────────
 
-BASE_URL   = "https://learn.microsoft.com"
-LOCALE     = "en-us"
-LOCALE_GB  = "en-gb"
+BASE_URL  = "https://learn.microsoft.com"
+LOCALE    = "en-us"
+LOCALE_GB = "en-gb"
 
 LEARNING_PATHS = [
     "learn.wwl.get-started-c-sharp-part-1",
@@ -34,7 +38,7 @@ LEARNING_PATHS = [
 
 SETTINGS_FILE = Path(__file__).parent / "settings.json"
 
-HEADERS = {
+BASE_HEADERS = {
     "accept": "application/json, text/plain, */*",
     "accept-language": "en-US,en;q=0.9",
     "content-type": "application/json",
@@ -47,6 +51,14 @@ HEADERS = {
     ),
 }
 
+PAGE_HEADERS = {
+    "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "sec-fetch-dest": "document",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-site": "same-origin",
+    "upgrade-insecure-requests": "1",
+}
+
 IMPORTANT_COOKIES = {"DocsToken", "ai_session", "MS0", "MUID", "MC1", "MSFPC", "mbox"}
 
 # ─── Cookie helpers ────────────────────────────────────────────────────────────
@@ -57,14 +69,16 @@ def load_cookies(path: Path) -> dict:
     return {c["name"]: c["value"] for c in cookie_list}
 
 
-def save_cookies(session: requests.Session, path: Path) -> None:
-    """Merge updated important cookies back into settings.json (called once at end)."""
+def save_cookies(jar: aiohttp.CookieJar, path: Path) -> None:
+    """Merge updated important cookies back into settings.json."""
     with open(path, "r", encoding="utf-8") as f:
         original_list: list[dict] = json.load(f)
 
-    session_cookies = {c.name: c.value for c in session.cookies}
-    updated = []
+    session_cookies: dict[str, str] = {}
+    for cookie in jar:
+        session_cookies[cookie.key] = cookie.value
 
+    updated = []
     for cookie_obj in original_list:
         name = cookie_obj["name"]
         if name in IMPORTANT_COOKIES and name in session_cookies:
@@ -89,76 +103,49 @@ def save_cookies(session: requests.Session, path: Path) -> None:
         json.dump(updated, f, indent=2)
 
 
-class PersistentSession(requests.Session):
-    def __init__(self, cookie_path: Path):
-        super().__init__()
-        self.cookie_path = cookie_path
+def build_cookie_jar(cookies: dict) -> aiohttp.CookieJar:
+    jar = aiohttp.CookieJar()
+    for name, value in cookies.items():
+        jar.update_cookies({name: value})
+    return jar
 
 
 # ─── API helpers ───────────────────────────────────────────────────────────────
 
-def get_path_modules(session: requests.Session, path_uid: str) -> list:
+async def get_path_modules(session: aiohttp.ClientSession, path_uid: str) -> list:
     url = f"{BASE_URL}/api/hierarchy/paths/{path_uid}"
-    #print(f"  [debug] GET {url}")
-    resp = session.get(url, params={"locale": LOCALE_GB})
-    #print(f"  [debug] Response status: {resp.status_code}")
-    resp.raise_for_status()
-    modules = resp.json().get("modules", [])
-    #print(f"  [debug] Modules found: {len(modules)}")
-    return modules
+    async with session.get(url, params={"locale": LOCALE_GB}) as resp:
+        resp.raise_for_status()
+        data = await resp.json(content_type=None)
+    return data.get("modules", [])
 
 
-def get_module_units(session: requests.Session, module_uid: str) -> list:
+async def get_module_units(session: aiohttp.ClientSession, module_uid: str) -> list:
     url = f"{BASE_URL}/api/hierarchy/modules/{module_uid}"
-    #print(f"  [debug] GET {url}")
-    resp = session.get(url, params={"locale": LOCALE_GB})
-    #print(f"  [debug] Response status: {resp.status_code}")
-    resp.raise_for_status()
-    units = resp.json().get("units", [])
-    #print(f"  [debug] Units found in module: {len(units)}")
-    return units
+    async with session.get(url, params={"locale": LOCALE_GB}) as resp:
+        resp.raise_for_status()
+        data = await resp.json(content_type=None)
+    return data.get("units", [])
 
 
-def count_quiz_questions(session: requests.Session, unit_url: str) -> int:
-    """Count divs with class="quiz-question" in the unit HTML.
-
-    Must use locale-prefixed URL (/en-us/training/...) and browser-like
-    navigation headers — otherwise MS Learn returns a minimal shell page
-    without the quiz content.
-    """
-    # unit_url is like /training/modules/.../5-knowledge-check/
-    # browser always requests /en-gb/training/... with navigation headers
+async def count_quiz_questions(session: aiohttp.ClientSession, unit_url: str) -> int:
+    """Count divs with class="quiz-question" in the unit HTML."""
     full_url = f"{BASE_URL}/en-us{unit_url}"
-    page_headers = {
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "same-origin",
-        "upgrade-insecure-requests": "1",
-    }
-    #print(f"    [debug] Fetching unit page: {full_url}")
     try:
-        resp = session.get(full_url, headers=page_headers, timeout=15)
+        async with session.get(full_url, headers=PAGE_HEADERS, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status != 200:
+                return 0
+            html = await resp.text()
     except Exception as e:
         print(f"    [debug] Page fetch failed: {e}")
         return 0
-    #print(f"    [debug] Page status: {resp.status_code}  |  HTML size: {len(resp.text)} bytes")
-    if resp.status_code != 200:
-        return 0
-    count = resp.text.count('class="quiz-question"')
-    #print(f'    [debug] class="quiz-question" occurrences: {count}')
-    return count
+    return html.count('class="quiz-question"')
 
 
 def extract_correct_answers(details: list) -> list[dict] | None:
     """
     Parse the 'details' array from a quiz PUT response and build a corrected
     answers payload. Returns None if details is empty or all were correct.
-
-    Each detail looks like:
-      {"id": 0, "isCorrect": false, "choices": [{"id": 0, "isCorrect": false}, {"id": 2, "isCorrect": true}]}
-
-    We pick the choice with isCorrect=true for each question.
     """
     if not details:
         return None
@@ -169,145 +156,121 @@ def extract_correct_answers(details: list) -> list[dict] | None:
         q_id = str(q.get("id", 0))
         correct_choices = [str(c["id"]) for c in q.get("choices", []) if c.get("isCorrect")]
         if not correct_choices:
-            # No correct choice info — keep "0" as fallback
             correct_choices = ["0"]
         corrected.append({"id": q_id, "answers": correct_choices})
         if not q.get("isCorrect"):
             all_correct = False
 
     if all_correct:
-        #print(f"    [debug] All answers were correct on first attempt — no resubmit needed")
         return None
 
-    return corrected  # list of {"id": str, "answers": [str]}
+    return corrected
 
 
-def mark_unit_complete(session: requests.Session, unit_uid: str, num_questions: int = 0, unit_url: str = "") -> dict:
+async def mark_unit_complete(
+    session: aiohttp.ClientSession,
+    unit_uid: str,
+    num_questions: int = 0,
+    unit_url: str = "",
+) -> dict:
     url         = f"{BASE_URL}/api/progress/units/{unit_uid}/"
     params      = {"locale": LOCALE}
     req_headers = {"referer": BASE_URL + unit_url} if unit_url else {}
 
-    #print(f"    [debug] PUT {url}")
-
-    # ── Reading unit — no questions, single PUT with no body ──────────────────
+    # ── Reading unit — no questions ───────────────────────────────────────────
     if num_questions == 0:
-        #print(f"    [debug] No questions — single PUT (reading unit)")
-        resp = session.put(url, params=params, headers=req_headers)
-        #print(f"    [debug] Response: {resp.status_code}  body: {resp.text[:200]}")
-        return {"status": resp.status_code, "body": resp.text[:200]}
+        async with session.put(url, params=params, headers=req_headers) as resp:
+            body = await resp.text()
+        return {"status": resp.status, "body": body[:200]}
 
     # ── Quiz unit — attempt 1: all answers "0" ────────────────────────────────
     payload = [{"id": str(i), "answers": ["0"]} for i in range(num_questions)]
-    #print(f"    [debug] Questions: {num_questions}  |  Attempt 1 payload: {json.dumps(payload)}")
-    resp = session.put(url, params=params, json=payload, headers=req_headers)
-    #print(f"    [debug] Attempt 1 response: {resp.status_code}  body: {resp.text[:300]}")
+    async with session.put(url, params=params, json=payload, headers=req_headers) as resp:
+        body = await resp.text()
+        status = resp.status
 
-    if resp.status_code != 200:
-        return {"status": resp.status_code, "body": resp.text[:200]}
+    if status != 200:
+        return {"status": status, "body": body[:200]}
 
     try:
-        data = resp.json()
+        data = json.loads(body)
     except Exception as e:
         print(f"    [debug] Failed to parse JSON response: {e}")
-        return {"status": resp.status_code, "body": resp.text[:200]}
+        return {"status": status, "body": body[:200]}
 
-    updated = data.get("updated", False)
-    passed  = data.get("passed", False)
-    details = data.get("details", [])
-    #print(f"    [debug] Attempt 1 result: updated={updated}  passed={passed}  details_count={len(details)}")
-
-    # ── Attempt 2: resubmit with correct answers extracted from details ────────
+    details  = data.get("details", [])
     corrected = extract_correct_answers(details)
     if corrected is None:
-        return {"status": resp.status_code, "body": resp.text[:200]}
+        return {"status": status, "body": body[:200]}
 
-    #print(f"    [debug] Attempt 2 payload (corrected): {json.dumps(corrected)}")
-    resp2 = session.put(url, params=params, json=corrected, headers=req_headers)
-    #print(f"    [debug] Attempt 2 response: {resp2.status_code}  body: {resp2.text[:300]}")
-
-    try:
-        data2 = resp2.json()
-        #print(f"    [debug] Attempt 2 result: updated={data2.get('updated')}  passed={data2.get('passed')}")
-    except Exception:
-        pass
-
-    return {"status": resp2.status_code, "body": resp2.text[:200]}
+    # ── Attempt 2: resubmit with correct answers ───────────────────────────────
+    async with session.put(url, params=params, json=corrected, headers=req_headers) as resp2:
+        body2 = await resp2.text()
+    return {"status": resp2.status, "body": body2[:200]}
 
 
 # ─── Unit / module / path runners ──────────────────────────────────────────────
 
-def process_unit(session: requests.Session, unit: dict) -> None:
-    unit_uid   = unit.get("uid", "")
-    unit_title = unit.get("title", unit_uid)
-    unit_url   = unit.get("url", "")
-    is_assess  = unit.get("module_assessment", False)
-    tag        = "[QUIZ]" if is_assess else "      "
-
-    #print(f"\n  │  ── Processing: {unit_title}")
-    #print(f"    [debug] UID: {unit_uid}")
-    #print(f"    [debug] URL: {unit_url}")
-    #print(f"    [debug] module_assessment flag: {is_assess}")
-    #print(f"    [debug] All unit keys: {list(unit.keys())}  type={unit.get('type')}  title={unit_title}")
-
-    # Units with points == 100 are plain reading/intro/summary units — never have questions.
-    # Units with points > 100 (200) may have inline quiz questions or are module assessments.
-    # This avoids a page GET for every low-value unit, cutting requests roughly in half.
+async def process_unit(session: aiohttp.ClientSession, unit: dict) -> None:
+    unit_uid    = unit.get("uid", "")
+    unit_title  = unit.get("title", unit_uid)
+    unit_url    = unit.get("url", "")
+    is_assess   = unit.get("module_assessment", False)
+    tag         = "[QUIZ]" if is_assess else "      "
     unit_points = unit.get("points", 0)
-    #print(f"    [debug] points={unit_points} — {'fetching page to count questions' if unit_points > 100 else 'skipping page fetch (reading unit)'}")
 
-    num_q = 0
     if unit_url and unit_points > 100:
+        # Fire page-fetch and a probe mark-complete concurrently
         try:
-            num_q = count_quiz_questions(session, unit_url)
+            num_q, result = await asyncio.gather(
+                count_quiz_questions(session, unit_url),
+                mark_unit_complete(session, unit_uid, num_questions=1, unit_url=unit_url),
+            )
         except Exception as e:
-            print(f"    [debug] count_quiz_questions raised: {e}")
-
-    result      = mark_unit_complete(session, unit_uid, num_q, unit_url)
+            print(f"    [debug] process_unit gather raised: {e}")
+            num_q, result = 0, {"status": 0, "body": ""}
+        # If true question count differs from probe assumption, resubmit properly
+        if num_q != 1:
+            result = await mark_unit_complete(session, unit_uid, num_q, unit_url)
+    else:
+        num_q  = 0
+        result = await mark_unit_complete(session, unit_uid, 0, unit_url)
     status      = result["status"]
     status_icon = "✓" if status in (200, 201, 204) else f"✗ ({status})"
     q_info      = f"  [{num_q} Q]" if num_q > 0 else ""
     print(f"  │  {status_icon} {tag} {unit_title}{q_info}")
 
 
-def complete_module(session: requests.Session, module: dict) -> None:
+async def complete_module(session: aiohttp.ClientSession, module: dict) -> None:
     module_uid   = module.get("uid", "")
     module_title = module.get("title", module_uid)
     print(f"\n  ┌─ Module: {module_title}")
-    #print(f"  [debug] Module UID: {module_uid}")
 
     units = module.get("units", [])
     if not units:
         try:
-            units = get_module_units(session, module_uid)
+            units = await get_module_units(session, module_uid)
         except Exception as e:
             print(f"  │  [ERROR] Could not fetch units: {e}")
             return
 
-    #print(f"  [debug] Total units to process: {len(units)}")
-
-    with ThreadPoolExecutor(max_workers=len(units)) as executor:
-        futures = {executor.submit(process_unit, session, unit): unit for unit in units}
-        for future in as_completed(futures):
-            try:
-                future.result()
-            except Exception as e:
-                unit = futures[future]
-                print(f"  │  ✗ [ERROR] {unit.get('title', '?')}: {e}")
+    # All units in the module run truly in parallel
+    await asyncio.gather(*(process_unit(session, unit) for unit in units))
 
     print(f"  └─ Module done\n")
 
 
-def complete_path(session: requests.Session, path_uid: str) -> None:
+async def complete_path(session: aiohttp.ClientSession, path_uid: str) -> None:
     print(f"\n{'='*60}")
     print(f"  Learning Path: {path_uid}")
     print(f"{'='*60}")
     try:
-        modules = get_path_modules(session, path_uid)
+        modules = await get_path_modules(session, path_uid)
     except Exception as e:
         print(f"  [ERROR] Could not fetch path: {e}")
         return
-    for module in modules:
-        complete_module(session, module)
+    # All modules in this path run concurrently
+    await asyncio.gather(*(complete_module(session, module) for module in modules))
 
 
 # ─── Menu helpers ──────────────────────────────────────────────────────────────
@@ -323,84 +286,62 @@ def pick(options: list, prompt: str) -> int:
         print("  Invalid choice, try again.")
 
 
-def select_path_and_modules(session: requests.Session):
-    """Returns (path_uid, modules) after user picks a path (built-in or custom)."""
+async def select_path_and_modules(session: aiohttp.ClientSession):
     print("\n── Select Learning Path ──")
-    all_paths  = LEARNING_PATHS + ["[ + Custom / paste URL ]"]
-    idx        = pick(all_paths, "Choose path")
+    all_paths = LEARNING_PATHS + ["[ + Custom / paste URL ]"]
+    idx = pick(all_paths, "Choose path")
     if idx == len(LEARNING_PATHS):
-        path_uid = select_path_uid_custom(session)
+        path_uid = await select_path_uid_custom(session)
         if not path_uid:
             raise ValueError("No path selected")
-        modules = get_path_modules(session, path_uid)
+        modules = await get_path_modules(session, path_uid)
     else:
         path_uid = LEARNING_PATHS[idx]
         print(f"\n  Fetching modules for {path_uid} ...")
-        modules  = get_path_modules(session, path_uid)
+        modules = await get_path_modules(session, path_uid)
     return path_uid, modules
 
 
-def select_module_and_units(session: requests.Session):
-    """Returns (module, units) after user picks path → module."""
-    _, modules = select_path_and_modules(session)
+async def select_module_and_units(session: aiohttp.ClientSession):
+    _, modules = await select_path_and_modules(session)
     print("\n── Select Module ──")
     idx    = pick([m.get("title", m.get("uid")) for m in modules], "Choose module")
     module = modules[idx]
     units  = module.get("units", [])
     if not units:
-        units = get_module_units(session, module.get("uid", ""))
+        units = await get_module_units(session, module.get("uid", ""))
     return module, units
 
 
 # ─── Custom path helpers ───────────────────────────────────────────────────────
 
-def fetch_uid_from_url(session: requests.Session, url: str) -> str | None:
-    """
-    Fetch any MS Learn page (path or module) and extract uid from:
-      <meta name="uid" content="learn-bizapps.get-started-data-analytics" />
-
-    Works for any prefix — no guessing needed. Use for both paths and modules.
-    """
-    import re
+async def fetch_uid_from_url(session: aiohttp.ClientSession, url: str) -> str | None:
     url = url.strip()
-    # Ensure it's an absolute URL
     if not url.startswith("http"):
         url = "https://" + url.lstrip("/")
 
-    #print(f"  [debug] Fetching page: {url}")
-    page_headers = {
-        "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "sec-fetch-dest": "document",
-        "sec-fetch-mode": "navigate",
-        "sec-fetch-site": "same-origin",
-    }
     try:
-        resp = session.get(url, headers=page_headers, timeout=15)
+        async with session.get(url, headers=PAGE_HEADERS, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            if resp.status != 200:
+                print(f"  [ERROR] Got {resp.status} fetching page")
+                return None
+            html = await resp.text()
     except Exception as e:
         print(f"  [debug] Page fetch failed: {e}")
         return None
 
-    #print(f"  [debug] Page status: {resp.status_code}  |  HTML size: {len(resp.text)} bytes")
-    if resp.status_code != 200:
-        print(f"  [ERROR] Got {resp.status_code} fetching page")
-        return None
-
-    match = re.search(r'<meta[^>]+name=["\']uid["\'][^>]+content=["\']([^"\' ]+)["\']', resp.text)
+    match = re.search(r'<meta[^>]+name=["\']uid["\'][^>]+content=["\']([^"\' ]+)["\']', html)
     if not match:
-        # also try reversed attribute order: content= before name=
-        match = re.search(r'<meta[^>]+content=["\']([^"\' ]+)["\'][^>]+name=["\']uid["\']', resp.text)
+        match = re.search(r'<meta[^>]+content=["\']([^"\' ]+)["\'][^>]+name=["\']uid["\']', html)
 
     if not match:
         print(f"  [ERROR] Could not find <meta name=\"uid\"> — is this a valid MS Learn URL?")
         return None
 
-    uid = match.group(1)
-    #print(f"  [debug] Found uid: {uid}")
-    return uid
+    return match.group(1)
 
 
 def load_custom_paths() -> list[str]:
-    """Load saved custom paths from custom_paths.json next to settings.json."""
     p = SETTINGS_FILE.parent / "custom_paths.json"
     if p.exists():
         try:
@@ -417,12 +358,7 @@ def save_custom_paths(paths: list[str]) -> None:
         json.dump(paths, f, indent=2)
 
 
-def select_path_uid_custom(session: requests.Session) -> str | None:
-    """
-    Ask user to pick from saved custom paths or paste a new learning path URL.
-    Fetches the page to extract the real uid from <meta name="uid">.
-    Returns the path UID string, or None if cancelled.
-    """
+async def select_path_uid_custom(session: aiohttp.ClientSession) -> str | None:
     custom = load_custom_paths()
 
     print("\n── Custom Learning Path ──")
@@ -441,21 +377,19 @@ def select_path_uid_custom(session: requests.Session) -> str | None:
             print("  Invalid choice.")
             return None
 
-    # Prompt explicitly for the full learning path URL
     print("\n  Paste the full learning path URL.")
     print("  Example: https://learn.microsoft.com/en-gb/training/paths/data-analytics-microsoft/")
     raw = input("  URL: ").strip()
     if not raw:
         return None
 
-    uid = fetch_uid_from_url(session, raw)
+    uid = await fetch_uid_from_url(session, raw)
     if not uid:
         return None
 
-    # Verify it works against the hierarchy API
     print(f"  Verifying path UID against API ...")
     try:
-        modules = get_path_modules(session, uid)
+        modules = await get_path_modules(session, uid)
     except Exception as e:
         print(f"  [ERROR] API call failed: {e}")
         return None
@@ -466,7 +400,6 @@ def select_path_uid_custom(session: requests.Session) -> str | None:
 
     save_choice = input("\n  Save this path for future use? [y/n]: ").strip().lower()
     if save_choice == "y":
-        # Grab a friendly title from the first module's parent if available
         title = modules[0].get("parents", [{}])[0].get("title", uid) if modules else uid
         custom.append({"uid": uid, "title": title})
         save_custom_paths(custom)
@@ -477,31 +410,27 @@ def select_path_uid_custom(session: requests.Session) -> str | None:
 
 # ─── Menu actions ──────────────────────────────────────────────────────────────
 
-def menu_specific_path(session: requests.Session) -> None:
-    _, modules = select_path_and_modules(session)
-    # re-wrap into a fake path structure isn't needed — just iterate modules
-    for module in modules:
-        complete_module(session, module)
+async def menu_specific_path(session: aiohttp.ClientSession) -> None:
+    _, modules = await select_path_and_modules(session)
+    await asyncio.gather(*(complete_module(session, module) for module in modules))
 
 
-def menu_specific_module(session: requests.Session) -> None:
-    module, _ = select_module_and_units(session)
-    complete_module(session, module)
+async def menu_specific_module(session: aiohttp.ClientSession) -> None:
+    module, _ = await select_module_and_units(session)
+    await complete_module(session, module)
 
 
-def menu_single_unit(session: requests.Session) -> None:
-    module, units = select_module_and_units(session)
+async def menu_single_unit(session: aiohttp.ClientSession) -> None:
+    module, units = await select_module_and_units(session)
     print("\n── Select Unit ──")
     idx  = pick([u.get("title", u.get("uid")) for u in units], "Choose unit")
     unit = units[idx]
     print()
-    process_unit(session, unit)
+    await process_unit(session, unit)
     print("\n✓ Unit processed.")
 
 
-
-def menu_custom_module(session: requests.Session) -> None:
-    """Complete a single module by pasting its URL — no learning path needed."""
+async def menu_custom_module(session: aiohttp.ClientSession) -> None:
     print("\n── Complete Module by URL ──")
     print("  Paste the module URL.")
     print("  Example: https://learn.microsoft.com/en-gb/training/modules/create-throw-exceptions-c-sharp/")
@@ -509,20 +438,19 @@ def menu_custom_module(session: requests.Session) -> None:
     if not raw:
         return
 
-    uid = fetch_uid_from_url(session, raw)
+    uid = await fetch_uid_from_url(session, raw)
     if not uid:
         return
 
     print(f"  Fetching units for module UID: {uid}")
     try:
-        units = get_module_units(session, uid)
+        units = await get_module_units(session, uid)
     except Exception as e:
         print(f"  [ERROR] Could not fetch module units: {e}")
         return
 
-    # Build a minimal module dict that complete_module() expects
     module = {"uid": uid, "title": uid, "units": units}
-    complete_module(session, module)
+    await complete_module(session, module)
 
 
 def show_main_menu() -> str:
@@ -541,7 +469,7 @@ def show_main_menu() -> str:
 
 # ─── Entry point ───────────────────────────────────────────────────────────────
 
-def main():
+async def async_main():
     print("Microsoft Learn — C# Course Auto-Completer")
     print("─" * 45)
 
@@ -553,56 +481,64 @@ def main():
     cookies = load_cookies(SETTINGS_FILE)
     print(f"Loaded {len(cookies)} cookies from settings.json")
 
-    session = PersistentSession(SETTINGS_FILE)
-    session.cookies.update(cookies)
-    session.headers.update(HEADERS)
-
-    # The API requires DocsToken as a Bearer token in Authorization header
-    # Using only cookies results in "updated": false — the Bearer header is what
-    # actually marks progress as updated on the server side
     docs_token = cookies.get("DocsToken", "")
-    if docs_token:
-        session.headers["authorization"] = f"Bearer {docs_token}"
-        #print(f"[debug] Authorization Bearer header set (token length: {len(docs_token)})")
-    else:
+    if not docs_token:
         print("[WARN] DocsToken not found in cookies — progress may not be marked")
 
-    #print("[debug] Checking auth ...")
-    test = session.get(f"{BASE_URL}/api/profile", params={"locale": LOCALE})
-    #print(f"[debug] /api/profile status: {test.status_code}")
-    if test.status_code == 401:
-        print("\n[ERROR] Authentication failed — DocsToken may have expired.")
-        print("Re-export cookies from your browser after logging in.")
-        return
-    print("Auth check passed ✓")
+    headers = {**BASE_HEADERS}
+    if docs_token:
+        headers["authorization"] = f"Bearer {docs_token}"
 
-    try:
-        while True:
-            choice = show_main_menu()
-            if choice == "1":
-                for path_uid in LEARNING_PATHS:
-                    complete_path(session, path_uid)
-                print("\n🎉  All 6 parts completed.")
-            elif choice == "2":
-                menu_specific_path(session)
-            elif choice == "3":
-                menu_specific_module(session)
-            elif choice == "4":
-                menu_single_unit(session)
-            elif choice == "5":
-                uid = select_path_uid_custom(session)
-                if uid:
-                    complete_path(session, uid)
-            elif choice == "6":
-                menu_custom_module(session)
-            elif choice == "0":
-                break
-            else:
-                print("  Invalid choice.")
-    finally:
-        print("\nSaving updated cookies...")
-        save_cookies(session, SETTINGS_FILE)
-        print("Cookies saved. Bye!")
+    # Build a single aiohttp session shared across ALL requests
+    connector = aiohttp.TCPConnector(limit=50, ttl_dns_cache=300)
+    jar       = aiohttp.CookieJar(unsafe=True)
+    jar.update_cookies(cookies)
+
+    async with aiohttp.ClientSession(
+        headers=headers,
+        cookie_jar=jar,
+        connector=connector,
+    ) as session:
+
+        # Auth check
+        async with session.get(f"{BASE_URL}/api/profile", params={"locale": LOCALE}) as resp:
+            if resp.status == 401:
+                print("\n[ERROR] Authentication failed — DocsToken may have expired.")
+                print("Re-export cookies from your browser after logging in.")
+                return
+        print("Auth check passed ✓")
+
+        try:
+            while True:
+                choice = show_main_menu()
+                if choice == "1":
+                    # All 6 paths run concurrently
+                    await asyncio.gather(*(complete_path(session, uid) for uid in LEARNING_PATHS))
+                    print("\n🎉  All 6 parts completed.")
+                elif choice == "2":
+                    await menu_specific_path(session)
+                elif choice == "3":
+                    await menu_specific_module(session)
+                elif choice == "4":
+                    await menu_single_unit(session)
+                elif choice == "5":
+                    uid = await select_path_uid_custom(session)
+                    if uid:
+                        await complete_path(session, uid)
+                elif choice == "6":
+                    await menu_custom_module(session)
+                elif choice == "0":
+                    break
+                else:
+                    print("  Invalid choice.")
+        finally:
+            print("\nSaving updated cookies...")
+            save_cookies(jar, SETTINGS_FILE)
+            print("Cookies saved. Bye!")
+
+
+def main():
+    asyncio.run(async_main())
 
 
 if __name__ == "__main__":
