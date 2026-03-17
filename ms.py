@@ -99,23 +99,23 @@ class PersistentSession(requests.Session):
 
 def get_path_modules(session: requests.Session, path_uid: str) -> list:
     url = f"{BASE_URL}/api/hierarchy/paths/{path_uid}"
-    print(f"  [debug] GET {url}")
+    #print(f"  [debug] GET {url}")
     resp = session.get(url, params={"locale": LOCALE_GB})
-    print(f"  [debug] Response status: {resp.status_code}")
+    #print(f"  [debug] Response status: {resp.status_code}")
     resp.raise_for_status()
     modules = resp.json().get("modules", [])
-    print(f"  [debug] Modules found: {len(modules)}")
+    #print(f"  [debug] Modules found: {len(modules)}")
     return modules
 
 
 def get_module_units(session: requests.Session, module_uid: str) -> list:
     url = f"{BASE_URL}/api/hierarchy/modules/{module_uid}"
-    print(f"  [debug] GET {url}")
+    #print(f"  [debug] GET {url}")
     resp = session.get(url, params={"locale": LOCALE_GB})
-    print(f"  [debug] Response status: {resp.status_code}")
+    #print(f"  [debug] Response status: {resp.status_code}")
     resp.raise_for_status()
     units = resp.json().get("units", [])
-    print(f"  [debug] Units found in module: {len(units)}")
+    #print(f"  [debug] Units found in module: {len(units)}")
     return units
 
 
@@ -136,17 +136,17 @@ def count_quiz_questions(session: requests.Session, unit_url: str) -> int:
         "sec-fetch-site": "same-origin",
         "upgrade-insecure-requests": "1",
     }
-    print(f"    [debug] Fetching unit page: {full_url}")
+    #print(f"    [debug] Fetching unit page: {full_url}")
     try:
         resp = session.get(full_url, headers=page_headers, timeout=15)
     except Exception as e:
         print(f"    [debug] Page fetch failed: {e}")
         return 0
-    print(f"    [debug] Page status: {resp.status_code}  |  HTML size: {len(resp.text)} bytes")
+    #print(f"    [debug] Page status: {resp.status_code}  |  HTML size: {len(resp.text)} bytes")
     if resp.status_code != 200:
         return 0
     count = resp.text.count('class="quiz-question"')
-    print(f'    [debug] class="quiz-question" occurrences: {count}')
+    #print(f'    [debug] class="quiz-question" occurrences: {count}')
     return count
 
 
@@ -176,7 +176,7 @@ def extract_correct_answers(details: list) -> list[dict] | None:
             all_correct = False
 
     if all_correct:
-        print(f"    [debug] All answers were correct on first attempt — no resubmit needed")
+        #print(f"    [debug] All answers were correct on first attempt — no resubmit needed")
         return None
 
     return corrected  # list of {"id": str, "answers": [str]}
@@ -187,20 +187,20 @@ def mark_unit_complete(session: requests.Session, unit_uid: str, num_questions: 
     params      = {"locale": LOCALE}
     req_headers = {"referer": BASE_URL + unit_url} if unit_url else {}
 
-    print(f"    [debug] PUT {url}")
+    #print(f"    [debug] PUT {url}")
 
     # ── Reading unit — no questions, single PUT with no body ──────────────────
     if num_questions == 0:
-        print(f"    [debug] No questions — single PUT (reading unit)")
+        #print(f"    [debug] No questions — single PUT (reading unit)")
         resp = session.put(url, params=params, headers=req_headers)
-        print(f"    [debug] Response: {resp.status_code}  body: {resp.text[:200]}")
+        #print(f"    [debug] Response: {resp.status_code}  body: {resp.text[:200]}")
         return {"status": resp.status_code, "body": resp.text[:200]}
 
     # ── Quiz unit — attempt 1: all answers "0" ────────────────────────────────
     payload = [{"id": str(i), "answers": ["0"]} for i in range(num_questions)]
-    print(f"    [debug] Questions: {num_questions}  |  Attempt 1 payload: {json.dumps(payload)}")
+    #print(f"    [debug] Questions: {num_questions}  |  Attempt 1 payload: {json.dumps(payload)}")
     resp = session.put(url, params=params, json=payload, headers=req_headers)
-    print(f"    [debug] Attempt 1 response: {resp.status_code}  body: {resp.text[:300]}")
+    #print(f"    [debug] Attempt 1 response: {resp.status_code}  body: {resp.text[:300]}")
 
     if resp.status_code != 200:
         return {"status": resp.status_code, "body": resp.text[:200]}
@@ -214,20 +214,20 @@ def mark_unit_complete(session: requests.Session, unit_uid: str, num_questions: 
     updated = data.get("updated", False)
     passed  = data.get("passed", False)
     details = data.get("details", [])
-    print(f"    [debug] Attempt 1 result: updated={updated}  passed={passed}  details_count={len(details)}")
+    #print(f"    [debug] Attempt 1 result: updated={updated}  passed={passed}  details_count={len(details)}")
 
     # ── Attempt 2: resubmit with correct answers extracted from details ────────
     corrected = extract_correct_answers(details)
     if corrected is None:
         return {"status": resp.status_code, "body": resp.text[:200]}
 
-    print(f"    [debug] Attempt 2 payload (corrected): {json.dumps(corrected)}")
+    #print(f"    [debug] Attempt 2 payload (corrected): {json.dumps(corrected)}")
     resp2 = session.put(url, params=params, json=corrected, headers=req_headers)
-    print(f"    [debug] Attempt 2 response: {resp2.status_code}  body: {resp2.text[:300]}")
+    #print(f"    [debug] Attempt 2 response: {resp2.status_code}  body: {resp2.text[:300]}")
 
     try:
         data2 = resp2.json()
-        print(f"    [debug] Attempt 2 result: updated={data2.get('updated')}  passed={data2.get('passed')}")
+        #print(f"    [debug] Attempt 2 result: updated={data2.get('updated')}  passed={data2.get('passed')}")
     except Exception:
         pass
 
@@ -243,17 +243,17 @@ def process_unit(session: requests.Session, unit: dict) -> None:
     is_assess  = unit.get("module_assessment", False)
     tag        = "[QUIZ]" if is_assess else "      "
 
-    print(f"\n  │  ── Processing: {unit_title}")
-    print(f"    [debug] UID: {unit_uid}")
-    print(f"    [debug] URL: {unit_url}")
-    print(f"    [debug] module_assessment flag: {is_assess}")
-    print(f"    [debug] All unit keys: {list(unit.keys())}  type={unit.get('type')}  title={unit_title}")
+    #print(f"\n  │  ── Processing: {unit_title}")
+    #print(f"    [debug] UID: {unit_uid}")
+    #print(f"    [debug] URL: {unit_url}")
+    #print(f"    [debug] module_assessment flag: {is_assess}")
+    #print(f"    [debug] All unit keys: {list(unit.keys())}  type={unit.get('type')}  title={unit_title}")
 
     # Units with points == 100 are plain reading/intro/summary units — never have questions.
     # Units with points > 100 (200) may have inline quiz questions or are module assessments.
     # This avoids a page GET for every low-value unit, cutting requests roughly in half.
     unit_points = unit.get("points", 0)
-    print(f"    [debug] points={unit_points} — {'fetching page to count questions' if unit_points > 100 else 'skipping page fetch (reading unit)'}")
+    #print(f"    [debug] points={unit_points} — {'fetching page to count questions' if unit_points > 100 else 'skipping page fetch (reading unit)'}")
 
     num_q = 0
     if unit_url and unit_points > 100:
@@ -273,7 +273,7 @@ def complete_module(session: requests.Session, module: dict) -> None:
     module_uid   = module.get("uid", "")
     module_title = module.get("title", module_uid)
     print(f"\n  ┌─ Module: {module_title}")
-    print(f"  [debug] Module UID: {module_uid}")
+    #print(f"  [debug] Module UID: {module_uid}")
 
     units = module.get("units", [])
     if not units:
@@ -283,7 +283,7 @@ def complete_module(session: requests.Session, module: dict) -> None:
             print(f"  │  [ERROR] Could not fetch units: {e}")
             return
 
-    print(f"  [debug] Total units to process: {len(units)}")
+    #print(f"  [debug] Total units to process: {len(units)}")
 
     with ThreadPoolExecutor(max_workers=len(units)) as executor:
         futures = {executor.submit(process_unit, session, unit): unit for unit in units}
@@ -367,7 +367,7 @@ def fetch_uid_from_url(session: requests.Session, url: str) -> str | None:
     if not url.startswith("http"):
         url = "https://" + url.lstrip("/")
 
-    print(f"  [debug] Fetching page: {url}")
+    #print(f"  [debug] Fetching page: {url}")
     page_headers = {
         "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "sec-fetch-dest": "document",
@@ -380,7 +380,7 @@ def fetch_uid_from_url(session: requests.Session, url: str) -> str | None:
         print(f"  [debug] Page fetch failed: {e}")
         return None
 
-    print(f"  [debug] Page status: {resp.status_code}  |  HTML size: {len(resp.text)} bytes")
+    #print(f"  [debug] Page status: {resp.status_code}  |  HTML size: {len(resp.text)} bytes")
     if resp.status_code != 200:
         print(f"  [ERROR] Got {resp.status_code} fetching page")
         return None
@@ -395,7 +395,7 @@ def fetch_uid_from_url(session: requests.Session, url: str) -> str | None:
         return None
 
     uid = match.group(1)
-    print(f"  [debug] Found uid: {uid}")
+    #print(f"  [debug] Found uid: {uid}")
     return uid
 
 
@@ -563,13 +563,13 @@ def main():
     docs_token = cookies.get("DocsToken", "")
     if docs_token:
         session.headers["authorization"] = f"Bearer {docs_token}"
-        print(f"[debug] Authorization Bearer header set (token length: {len(docs_token)})")
+        #print(f"[debug] Authorization Bearer header set (token length: {len(docs_token)})")
     else:
         print("[WARN] DocsToken not found in cookies — progress may not be marked")
 
-    print("[debug] Checking auth ...")
+    #print("[debug] Checking auth ...")
     test = session.get(f"{BASE_URL}/api/profile", params={"locale": LOCALE})
-    print(f"[debug] /api/profile status: {test.status_code}")
+    #print(f"[debug] /api/profile status: {test.status_code}")
     if test.status_code == 401:
         print("\n[ERROR] Authentication failed — DocsToken may have expired.")
         print("Re-export cookies from your browser after logging in.")
